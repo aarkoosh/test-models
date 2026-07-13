@@ -1,1 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#0e1117;}
+canvas{display:block;width:100%;height:100%;}
+canvas.grab{cursor:grab;}
+canvas.grabbing{cursor:grabbing;}
+#status{
+  position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  background:#0e1117;color:rgba(255,255,255,0.45);font:14px/1.5 system-ui,sans-serif;
+  pointer-events:none;transition:opacity .3s;z-index:20;
+}
+#status.hidden{opacity:0;}
+#status.error{color:#f87171;}
+#tabs{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:10;
+  display:flex;gap:6px;padding:6px;border-radius:999px;
+  background:rgba(255,255,255,0.06);
+  backdrop-filter:blur(16px) saturate(150%);
+  -webkit-backdrop-filter:blur(16px) saturate(150%);
+  border:1px solid rgba(255,255,255,0.12);
+  box-shadow:0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.tab{
+  padding:8px 18px;border-radius:999px;border:1px solid transparent;
+  background:transparent;color:rgba(255,255,255,0.5);
+  font:500 13px/1 system-ui,sans-serif;cursor:pointer;white-space:nowrap;
+  transition:background .2s,color .2s,border-color .2s,box-shadow .2s;
+}
+.tab:hover{color:rgba(255,255,255,0.85);}
+.tab.active{
+  background:rgba(255,255,255,0.12);
+  border-color:rgba(255,255,255,0.2);
+  color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);
+}
+#hint{
+  position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:10;
+  padding:8px 16px;border-radius:999px;
+  background:rgba(255,255,255,0.05);
+  backdrop-filter:blur(12px) saturate(140%);
+  -webkit-backdrop-filter:blur(12px) saturate(140%);
+  border:1px solid rgba(255,255,255,0.1);
+  color:rgba(255,255,255,0.35);font:12px/1 system-ui,sans-serif;
+  pointer-events:none;
+}
+#forest-controls{
+  position:fixed;top:72px;right:16px;z-index:10;
+  display:flex;flex-direction:column;gap:12px;
+  min-width:200px;padding:14px 16px;border-radius:14px;
+  background:rgba(255,255,255,0.06);
+  backdrop-filter:blur(16px) saturate(150%);
+  -webkit-backdrop-filter:blur(16px) saturate(150%);
+  border:1px solid rgba(255,255,255,0.12);
+  box-shadow:0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+#forest-controls.hidden{display:none;}
+#forest-controls h2{
+  font:600 12px/1 system-ui,sans-serif;
+  letter-spacing:0.04em;text-transform:uppercase;
+  color:rgba(255,255,255,0.45);
+}
+#forest-controls label{
+  display:flex;flex-direction:column;gap:6px;
+  font:500 12px/1 system-ui,sans-serif;color:rgba(255,255,255,0.7);
+}
+#forest-controls label span{
+  display:flex;justify-content:space-between;align-items:center;
+}
+#forest-controls output{
+  font:600 12px/1 ui-monospace,monospace;color:rgba(255,255,255,0.9);
+}
+#forest-controls input[type=range]{
+  width:100%;height:4px;appearance:none;border-radius:999px;
+  background:rgba(255,255,255,0.14);outline:none;cursor:pointer;
+}
+#forest-controls input[type=range]::-webkit-slider-thumb{
+  appearance:none;width:14px;height:14px;border-radius:50%;
+  background:#fff;border:2px solid rgba(255,255,255,0.35);
+  box-shadow:0 2px 8px rgba(0,0,0,0.35);
+}
+#forest-controls input[type=range]::-moz-range-thumb{
+  width:14px;height:14px;border-radius:50%;
+  background:#fff;border:2px solid rgba(255,255,255,0.35);
+  box-shadow:0 2px 8px rgba(0,0,0,0.35);
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<nav id="tabs"></nav>
+<div id="hint">Drag to orbit · Scroll to zoom</div>
+<div id="forest-controls" class="hidden">
+  <h2>Forest</h2>
+  <label>
+    <span>Trees <output id="forest-count-val">500</output></span>
+    <input type="range" id="forest-count" min="10" max="5000" step="10" value="500">
+  </label>
+  <label>
+    <span>Density <output id="forest-density-val">70</output></span>
+    <input type="range" id="forest-density" min="0" max="100" value="70">
+  </label>
+  <h2>Rotation</h2>
+  <label>
+    <span>Rot X min ° <output id="forest-rotx-min-val">0</output></span>
+    <input type="range" id="forest-rotx-min" min="0" max="360" value="0">
+  </label>
+  <label>
+    <span>Rot X max ° <output id="forest-rotx-max-val">360</output></span>
+    <input type="range" id="forest-rotx-max" min="0" max="360" value="360">
+  </label>
+</div>
+<div id="status">Loading…</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+const GRID_SIZE = 800;
+const GRID_DIVISIONS = 40;
+
+const MODELS = [
+  { id: 'snow', label: 'Snow Trees', url: './snow_trees_pack_lowpoly.glb' },
+  {
+    id: 'autumn',
+    label: 'Autumn Trees',
+    url: './stylized_aumtumn_trees_pack_animation_baked.glb',
+    forest: { count: 500, density: 70, seed: 42, rotXMin: 0, rotXMax: 360 },
+  },
+  { id: 'trees', label: 'Trees & Bushes', url: './trees_and_bush_pack_lowpoly.glb' },
+];
+
+const canvas = document.getElementById('c');
+const statusEl = document.getElementById('status');
+const tabsEl = document.getElementById('tabs');
+const forestControlsEl = document.getElementById('forest-controls');
+const forestCountInput = document.getElementById('forest-count');
+const forestDensityInput = document.getElementById('forest-density');
+const forestRotXMinInput = document.getElementById('forest-rotx-min');
+const forestRotXMaxInput = document.getElementById('forest-rotx-max');
+const forestCountVal = document.getElementById('forest-count-val');
+const forestDensityVal = document.getElementById('forest-density-val');
+const forestRotXMinVal = document.getElementById('forest-rotx-min-val');
+const forestRotXMaxVal = document.getElementById('forest-rotx-max-val');
+
+let autumnEntry = null;
+let forestRebuildTimer = 0;
+
+const windUniforms = { uTime: { value: 0 } };
+const _dummy = new THREE.Object3D();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1117);
+scene.fog = new THREE.Fog(0x0e1117, GRID_SIZE * 0.4, GRID_SIZE * 1.2);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 4000);
+camera.position.set(80, 60, 120);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 10;
+controls.maxDistance = GRID_SIZE * 0.8;
+
+canvas.classList.add('grab');
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button === 0) {
+    canvas.classList.remove('grab');
+    canvas.classList.add('grabbing');
+  }
+});
+window.addEventListener('pointerup', () => {
+  canvas.classList.remove('grabbing');
+  canvas.classList.add('grab');
+});
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+const sun = new THREE.DirectionalLight(0xfff4e6, 1.2);
+sun.position.set(120, 180, 100);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const shadowExtent = GRID_SIZE / 2;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 1200;
+sun.shadow.camera.left = -shadowExtent;
+sun.shadow.camera.right = shadowExtent;
+sun.shadow.camera.top = shadowExtent;
+sun.shadow.camera.bottom = -shadowExtent;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x8899cc, 0.35);
+fill.position.set(-100, 80, -60);
+scene.add(fill);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE),
+  new THREE.MeshStandardMaterial({ color: 0x161b22, roughness: 0.95, metalness: 0.05 }),
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x4a5568, 0x2d3748);
+grid.position.y = 0.01;
+scene.add(grid);
+
+const clock = new THREE.Clock();
+const loader = new GLTFLoader();
+const entries = [];
+let activeEntry = null;
+
+const _v = new THREE.Vector3();
+const _box = new THREE.Box3();
+
+function setStatus(text, isError = false) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle('error', isError);
+  statusEl.classList.toggle('hidden', !text);
+}
+
+function hasMesh(node) {
+  let found = false;
+  node.traverse((child) => { if (child.isMesh) found = true; });
+  return found;
+}
+
+function hasTrunkMesh(node) {
+  let found = false;
+  node.traverse((child) => {
+    if (child.isMesh && /trunk/i.test(child.name)) found = true;
+  });
+  return found;
+}
+
+function configureMeshMaterials(mesh) {
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  for (const mat of materials) {
+    if (!mat) continue;
+    if (/trunk/i.test(mat.name) && mat.map) {
+      mat.transparent = false;
+      mat.depthWrite = true;
+      mat.alphaTest = 0.5;
+      mat.side = THREE.DoubleSide;
+    }
+  }
+}
+
+function prepareMeshes(root, { shadows = true } = {}) {
+  root.traverse((child) => {
+    if (!child.isMesh) return;
+    child.castShadow = shadows;
+    child.receiveShadow = shadows;
+    configureMeshMaterials(child);
+  });
+}
+
+function computeMeshBox(root, target = _box) {
+  target.makeEmpty();
+  root.updateWorldMatrix(true, true);
+  root.traverse((child) => {
+    if (!child.isMesh || !child.geometry?.attributes?.position) return;
+    const pos = child.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      _v.fromBufferAttribute(pos, i);
+      _v.applyMatrix4(child.matrixWorld);
+      target.expandByPoint(_v);
+    }
+  });
+  if (target.isEmpty()) target.setFromObject(root);
+  return target;
+}
+
+function getLowestWorldY(node, { trunksOnly = false } = {}) {
+  let minY = Infinity;
+  node.updateWorldMatrix(true, true);
+  node.traverse((child) => {
+    if (!child.isMesh || !child.geometry?.attributes?.position) return;
+    if (trunksOnly && !/trunk/i.test(child.name)) return;
+    const pos = child.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      _v.fromBufferAttribute(pos, i);
+      _v.applyMatrix4(child.matrixWorld);
+      if (_v.y < minY) minY = _v.y;
+    }
+  });
+  return minY;
+}
+
+function getHighestWorldY(node) {
+  let maxY = -Infinity;
+  node.updateWorldMatrix(true, true);
+  node.traverse((child) => {
+    if (!child.isMesh || !child.geometry?.attributes?.position) return;
+    const pos = child.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      _v.fromBufferAttribute(pos, i);
+      _v.applyMatrix4(child.matrixWorld);
+      if (_v.y > maxY) maxY = _v.y;
+    }
+  });
+  return maxY;
+}
+
+function getSortedMeshVertexWorldYs(mesh) {
+  const ys = [];
+  mesh.updateWorldMatrix(true, true);
+  const pos = mesh.geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    _v.fromBufferAttribute(pos, i);
+    _v.applyMatrix4(mesh.matrixWorld);
+    ys.push(_v.y);
+  }
+  return ys.sort((a, b) => a - b);
+}
+
+function findLayoutRoot(root) {
+  let node = root;
+  while (node.children.length === 1 && !node.children[0].isMesh) {
+    node = node.children[0];
+  }
+  const instances = node.children.filter(hasMesh);
+  return instances.length >= 2 ? node : root;
+}
+
+function groundInstance(node) {
+  const minY = getLowestWorldY(node, { trunksOnly: hasTrunkMesh(node) });
+  if (!Number.isFinite(minY)) return;
+  node.position.y -= minY;
+}
+
+function centerOnGround(root) {
+  const box = computeMeshBox(root);
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.updateWorldMatrix(true, true);
+  const finalBox = computeMeshBox(root);
+  const finalSize = finalBox.getSize(new THREE.Vector3());
+  return { size: finalSize, height: finalSize.y };
+}
+
+function centerModel(root) {
+  root.updateWorldMatrix(true, true);
+  const layout = findLayoutRoot(root);
+
+  if (layout === root) {
+    groundInstance(root);
+  } else {
+    for (const child of layout.children) {
+      if (hasMesh(child)) groundInstance(child);
+    }
+  }
+
+  return centerOnGround(root);
+}
+
+function repairMissingTrunks(root) {
+  const pine1 = root.getObjectByName('pine1');
+  const trunkSrc = root.getObjectByName('Pine2_Trunk_0');
+  if (!pine1 || !trunkSrc) return;
+  if (pine1.children.some((c) => c.isMesh && /trunk/i.test(c.name))) return;
+
+  const foliage = pine1.children.find(
+    (c) => c.isMesh && !/trunk/i.test(c.name),
+  );
+  if (!foliage) return;
+
+  const trunk = trunkSrc.clone(true);
+  trunk.name = 'pine1_Trunk_0';
+  pine1.add(trunk);
+
+  pine1.updateWorldMatrix(true, true);
+  const trunkTop = getHighestWorldY(trunk);
+  const foliageYs = getSortedMeshVertexWorldYs(foliage);
+  const crownStart = foliageYs.find((y) => y > trunkTop + 0.5);
+  if (crownStart !== undefined) {
+    pine1.getWorldScale(_v);
+    foliage.position.y += (trunkTop - crownStart) / _v.y;
+  }
+}
+
+function mulberry32(seed) {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function densityToSpacing(density) {
+  return THREE.MathUtils.lerp(4.5, 2.0, density / 100);
+}
+
+function forestRadius(count, density) {
+  const spacing = densityToSpacing(density);
+  return Math.max(20, Math.sqrt(count) * spacing * 1.05);
+}
+
+function forestOptionsFromParams(params) {
+  const rotXMin = THREE.MathUtils.degToRad(params.rotXMin ?? 0);
+  const rotXMax = THREE.MathUtils.degToRad(params.rotXMax ?? 360);
+  return {
+    count: params.count,
+    minSpacing: densityToSpacing(params.density),
+    radius: forestRadius(params.count, params.density),
+    seed: params.seed ?? 42,
+    rotXMin: Math.min(rotXMin, rotXMax),
+    rotXMax: Math.max(rotXMin, rotXMax),
+  };
+}
+
+function enableWindMaterial(material) {
+  if (material.userData.windEnabled) return;
+  material.userData.windEnabled = true;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = windUniforms.uTime;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+      uniform float uTime;`,
+    ).replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      float windH = max(transformed.y, 0.0);
+      float windPhase = uTime * 1.15 + transformed.x * 0.4 + transformed.z * 0.3;
+      transformed.x += sin(windPhase) * windH * 0.032;
+      transformed.z += cos(windPhase * 0.88) * windH * 0.026;`,
+    );
+  };
+  material.customProgramCacheKey = () => 'forest-wind-v1';
+  material.needsUpdate = true;
+}
+
+function bakeTreeTemplate(template) {
+  template.updateWorldMatrix(true, true);
+  const mesh = template.children.find((child) => child.isMesh)
+    ?? template.getObjectByProperty('type', 'Mesh');
+  if (!mesh) throw new Error(`No mesh on template ${template.name}`);
+
+  const geometry = mesh.geometry.clone();
+  geometry.applyMatrix4(mesh.matrixWorld);
+  geometry.morphAttributes = {};
+  geometry.morphTargetsRelative = false;
+  geometry.computeBoundingBox();
+  geometry.translate(0, -geometry.boundingBox.min.y, 0);
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+
+  const material = mesh.material.clone();
+  material.morphTargets = false;
+  material.morphNormals = false;
+  enableWindMaterial(material);
+
+  return { name: template.name, geometry, material };
+}
+
+function generateForestPlacements(count, radius, minSpacing, rng) {
+  const placed = [];
+  const grid = new Map();
+  const cell = minSpacing;
+
+  function fits(x, z) {
+    const gx = Math.floor(x / cell);
+    const gz = Math.floor(z / cell);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const bucket = grid.get(`${gx + dx},${gz + dz}`);
+        if (!bucket) continue;
+        for (const p of bucket) {
+          if (Math.hypot(p.x - x, p.z - z) < minSpacing) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  const maxAttempts = Math.max(80, Math.ceil(Math.sqrt(count) * 10));
+  for (let i = 0; i < count; i++) {
+    let placedOne = false;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const angle = rng() * Math.PI * 2;
+      const dist = Math.sqrt(rng()) * radius;
+      const x = Math.cos(angle) * dist;
+      const z = Math.sin(angle) * dist;
+      if (!fits(x, z)) continue;
+
+      const gx = Math.floor(x / cell);
+      const gz = Math.floor(z / cell);
+      const key = `${gx},${gz}`;
+      if (!grid.has(key)) grid.set(key, []);
+      const point = { x, z };
+      grid.get(key).push(point);
+      placed.push(point);
+      placedOne = true;
+      break;
+    }
+    if (!placedOne) continue;
+  }
+
+  return placed;
+}
+
+function buildInstancedForest(gltf, options, templateCache = null) {
+  const layout = findLayoutRoot(gltf.scene);
+  const templateNodes = layout.children.filter(hasMesh);
+  if (!templateNodes.length) throw new Error('No tree templates found in autumn GLB');
+
+  const templates = templateCache ?? templateNodes.map(bakeTreeTemplate);
+  const rng = mulberry32(options.seed ?? 1);
+  const placements = generateForestPlacements(
+    options.count ?? 24,
+    options.radius ?? 90,
+    options.minSpacing ?? 6,
+    rng,
+  );
+  if (!placements.length) throw new Error('Forest placement failed');
+
+  const rotXMin = options.rotXMin ?? 0;
+  const rotXMax = options.rotXMax ?? Math.PI * 2;
+  const forest = new THREE.Group();
+  const instancedMeshes = [];
+  const typeCount = templates.length;
+  const buckets = Array.from({ length: typeCount }, () => []);
+
+  for (const point of placements) {
+    const typeIdx = Math.floor(rng() * typeCount);
+    const scale = THREE.MathUtils.lerp(0.85, 1.15, rng());
+    const spin = THREE.MathUtils.lerp(rotXMin, rotXMax, rng());
+    buckets[typeIdx].push({ x: point.x, z: point.z, scale, spin });
+  }
+
+  const castShadow = placements.length <= 400;
+
+  for (let i = 0; i < typeCount; i++) {
+    const instances = buckets[i];
+    if (!instances.length) continue;
+
+    const { geometry, material } = templates[i];
+    const mesh = new THREE.InstancedMesh(geometry, material, instances.length);
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+
+    for (let j = 0; j < instances.length; j++) {
+      const inst = instances[j];
+      _dummy.position.set(inst.x, 0, inst.z);
+      // Baked geometry has trunk along Y; spin maps from mesh.rotation.x (trunk axis).
+      _dummy.rotation.set(0, inst.spin, 0);
+      _dummy.scale.setScalar(inst.scale);
+      _dummy.updateMatrix();
+      mesh.setMatrixAt(j, _dummy.matrix);
+    }
+
+    mesh.instanceMatrix.needsUpdate = true;
+    forest.add(mesh);
+    instancedMeshes.push(mesh);
+  }
+
+  return { forest, instancedMeshes, treeCount: placements.length, templates };
+}
+
+function clearInstancedForest(root) {
+  while (root.children.length) root.remove(root.children[0]);
+}
+
+function rebuildAutumnForest(entry) {
+  clearInstancedForest(entry.root);
+
+  const built = buildInstancedForest(
+    entry.gltf,
+    forestOptionsFromParams(entry.forestParams),
+    entry.forestTemplates,
+  );
+  entry.forestTemplates = built.templates;
+  prepareMeshes(built.forest, { shadows: false });
+
+  for (const mesh of built.instancedMeshes) entry.root.add(mesh);
+  entry.instancedMeshes = built.instancedMeshes;
+  entry.treeCount = built.treeCount;
+  entry.mixers = [];
+
+  const { size, height } = centerOnGround(entry.root);
+  entry.size.copy(size);
+  entry.height = height;
+  forestCountVal.textContent = `${built.treeCount}`;
+  if (activeEntry === entry) frameModel(entry);
+}
+
+function syncForestControlsUI(params) {
+  forestCountInput.value = params.count;
+  forestDensityInput.value = params.density;
+  forestRotXMinInput.value = params.rotXMin;
+  forestRotXMaxInput.value = params.rotXMax;
+  forestCountVal.textContent = autumnEntry?.treeCount ?? params.count;
+  forestDensityVal.value = params.density;
+  forestRotXMinVal.value = params.rotXMin;
+  forestRotXMaxVal.value = params.rotXMax;
+}
+
+function readForestParamsFromUI() {
+  return {
+    count: Number(forestCountInput.value),
+    density: Number(forestDensityInput.value),
+    rotXMin: Number(forestRotXMinInput.value),
+    rotXMax: Number(forestRotXMaxInput.value),
+    seed: autumnEntry?.forestParams.seed ?? 42,
+  };
+}
+
+function scheduleForestRebuild() {
+  if (!autumnEntry) return;
+  autumnEntry.forestParams = readForestParamsFromUI();
+  syncForestControlsUI(autumnEntry.forestParams);
+  clearTimeout(forestRebuildTimer);
+  forestRebuildTimer = setTimeout(() => rebuildAutumnForest(autumnEntry), 120);
+}
+
+function frameModel(entry) {
+  const { size, height } = entry;
+  const radius = Math.max(size.x, size.z, height) * 0.55;
+  const dist = Math.max(radius * 2.8, 40);
+
+  controls.target.set(0, height * 0.35, 0);
+  camera.position.set(dist * 0.65, dist * 0.45, dist);
+  controls.minDistance = radius * 0.4;
+  controls.maxDistance = GRID_SIZE * 0.75;
+  controls.update();
+}
+
+async function loadModel(def) {
+  setStatus(`Loading ${def.label}…`);
+
+  const gltf = await new Promise((resolve, reject) => {
+    loader.load(def.url, resolve, undefined, reject);
+  });
+
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+
+  if (def.forest) {
+    setStatus(`Planting ${def.label}…`);
+    const forestParams = {
+      count: def.forest.count ?? 500,
+      density: def.forest.density ?? 70,
+      seed: def.forest.seed ?? 42,
+      rotXMin: def.forest.rotXMin ?? 0,
+      rotXMax: def.forest.rotXMax ?? 360,
+    };
+    const built = buildInstancedForest(gltf, forestOptionsFromParams(forestParams));
+    prepareMeshes(built.forest, { shadows: false });
+    group.add(built.forest);
+    const { size, height } = centerOnGround(built.forest);
+    return {
+      def,
+      group,
+      gltf,
+      root: built.forest,
+      forestTemplates: built.templates,
+      instancedMeshes: built.instancedMeshes,
+      treeCount: built.treeCount,
+      mixer: null,
+      mixers: [],
+      size,
+      height,
+      isForest: true,
+      forestParams,
+    };
+  }
+
+  const root = gltf.scene;
+  repairMissingTrunks(root);
+  prepareMeshes(root);
+  group.add(root);
+
+  const { size, height } = centerModel(root);
+  const mixer = gltf.animations.length ? new THREE.AnimationMixer(root) : null;
+  const actions = mixer
+    ? gltf.animations.map((clip) => mixer.clipAction(clip))
+    : [];
+
+  return { def, group, root, mixer, mixers: [], actions, size, height, isForest: false };
+}
+
+function setActiveEntry(entry) {
+  const changed = activeEntry !== entry;
+  activeEntry = entry;
+
+  for (const item of entries) {
+    item.group.visible = item === entry;
+  }
+
+  for (const btn of tabsEl.children) {
+    btn.classList.toggle('active', btn.dataset.id === entry.def.id);
+  }
+
+  const showForestControls = entry.isForest;
+  forestControlsEl.classList.toggle('hidden', !showForestControls);
+  if (showForestControls) syncForestControlsUI(entry.forestParams);
+
+  if (changed) frameModel(entry);
+}
+
+function buildTabs() {
+  for (const entry of entries) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tab';
+    btn.dataset.id = entry.def.id;
+    btn.textContent = entry.def.label;
+    btn.addEventListener('click', () => setActiveEntry(entry));
+    tabsEl.appendChild(btn);
+  }
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+async function init() {
+  try {
+    for (const def of MODELS) {
+      const entry = await loadModel(def);
+      entries.push(entry);
+      if (entry.isForest) autumnEntry = entry;
+    }
+    buildTabs();
+    forestCountInput.addEventListener('input', scheduleForestRebuild);
+    forestDensityInput.addEventListener('input', scheduleForestRebuild);
+    forestRotXMinInput.addEventListener('input', scheduleForestRebuild);
+    forestRotXMaxInput.addEventListener('input', scheduleForestRebuild);
+    setActiveEntry(entries[0]);
+    setStatus('');
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to load: ${err.message}`, true);
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+
+  if (activeEntry?.isForest) {
+    windUniforms.uTime.value = clock.elapsedTime;
+  } else if (activeEntry?.mixer) {
+    activeEntry.mixer.update(delta);
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+renderer.setSize(innerWidth, innerHeight);
+init();
+animate();
+</script>
+</body>
+</html>
