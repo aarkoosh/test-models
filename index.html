@@ -366,12 +366,11 @@ function centerModel(root) {
   root.updateWorldMatrix(true, true);
   const layout = findLayoutRoot(root);
 
-  if (layout === root) {
-    groundInstance(root);
+  const instances = layout.children.filter(hasMesh);
+  if (instances.length >= 2) {
+    for (const child of instances) groundInstance(child);
   } else {
-    for (const child of layout.children) {
-      if (hasMesh(child)) groundInstance(child);
-    }
+    groundInstance(root);
   }
 
   return centerOnGround(root);
@@ -585,7 +584,15 @@ function buildInstancedForest(gltf, options, templateCache = null) {
 }
 
 function clearInstancedForest(root) {
-  while (root.children.length) root.remove(root.children[0]);
+  while (root.children.length) {
+    const child = root.children[0];
+    if (child.isInstancedMesh) {
+      child.geometry.dispose();
+      child.material.dispose();
+      child.dispose();
+    }
+    root.remove(child);
+  }
 }
 
 function rebuildAutumnForest(entry) {
@@ -602,8 +609,6 @@ function rebuildAutumnForest(entry) {
   for (const mesh of built.instancedMeshes) entry.root.add(mesh);
   entry.instancedMeshes = built.instancedMeshes;
   entry.treeCount = built.treeCount;
-  entry.mixers = [];
-
   const { size, height } = centerOnGround(entry.root);
   entry.size.copy(size);
   entry.height = height;
@@ -617,9 +622,9 @@ function syncForestControlsUI(params) {
   forestRotXMinInput.value = params.rotXMin;
   forestRotXMaxInput.value = params.rotXMax;
   forestCountVal.textContent = autumnEntry?.treeCount ?? params.count;
-  forestDensityVal.value = params.density;
-  forestRotXMinVal.value = params.rotXMin;
-  forestRotXMaxVal.value = params.rotXMax;
+  forestDensityVal.textContent = params.density;
+  forestRotXMinVal.textContent = params.rotXMin;
+  forestRotXMaxVal.textContent = params.rotXMax;
 }
 
 function readForestParamsFromUI() {
@@ -637,7 +642,9 @@ function scheduleForestRebuild() {
   autumnEntry.forestParams = readForestParamsFromUI();
   syncForestControlsUI(autumnEntry.forestParams);
   clearTimeout(forestRebuildTimer);
-  forestRebuildTimer = setTimeout(() => rebuildAutumnForest(autumnEntry), 120);
+  forestRebuildTimer = setTimeout(() => {
+    try { rebuildAutumnForest(autumnEntry); } catch (e) { console.error('Forest rebuild failed', e); }
+  }, 120);
 }
 
 function frameModel(entry) {
@@ -685,7 +692,6 @@ async function loadModel(def) {
       instancedMeshes: built.instancedMeshes,
       treeCount: built.treeCount,
       mixer: null,
-      mixers: [],
       size,
       height,
       isForest: true,
@@ -700,11 +706,9 @@ async function loadModel(def) {
 
   const { size, height } = centerModel(root);
   const mixer = gltf.animations.length ? new THREE.AnimationMixer(root) : null;
-  const actions = mixer
-    ? gltf.animations.map((clip) => mixer.clipAction(clip))
-    : [];
+  if (mixer) gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
 
-  return { def, group, root, mixer, mixers: [], actions, size, height, isForest: false };
+  return { def, group, root, mixer, size, height, isForest: false };
 }
 
 function setActiveEntry(entry) {
