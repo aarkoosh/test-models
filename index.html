@@ -308,33 +308,6 @@ function getLowestWorldY(node, { trunksOnly = false } = {}) {
   return minY;
 }
 
-function getHighestWorldY(node) {
-  let maxY = -Infinity;
-  node.updateWorldMatrix(true, true);
-  node.traverse((child) => {
-    if (!child.isMesh || !child.geometry?.attributes?.position) return;
-    const pos = child.geometry.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      _v.fromBufferAttribute(pos, i);
-      _v.applyMatrix4(child.matrixWorld);
-      if (_v.y > maxY) maxY = _v.y;
-    }
-  });
-  return maxY;
-}
-
-function getSortedMeshVertexWorldYs(mesh) {
-  const ys = [];
-  mesh.updateWorldMatrix(true, true);
-  const pos = mesh.geometry.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    _v.fromBufferAttribute(pos, i);
-    _v.applyMatrix4(mesh.matrixWorld);
-    ys.push(_v.y);
-  }
-  return ys.sort((a, b) => a - b);
-}
-
 function findLayoutRoot(root) {
   let node = root;
   while (node.children.length === 1 && !node.children[0].isMesh) {
@@ -345,9 +318,24 @@ function findLayoutRoot(root) {
 }
 
 function groundInstance(node) {
+  // Prefer trunk base when present. pine1 foliage hangs ~2 units below its
+  // trunk; grounding to foliage leaves the trunk floating.
   const minY = getLowestWorldY(node, { trunksOnly: hasTrunkMesh(node) });
   if (!Number.isFinite(minY)) return;
-  node.position.y -= minY;
+
+  node.getWorldPosition(_v);
+  _v.y -= minY;
+  if (node.parent) node.parent.worldToLocal(_v);
+
+  if (node.matrixAutoUpdate) {
+    node.position.copy(_v);
+  } else {
+    node.matrix.elements[12] = _v.x;
+    node.matrix.elements[13] = _v.y;
+    node.matrix.elements[14] = _v.z;
+    node.matrix.decompose(node.position, node.quaternion, node.scale);
+    node.matrixWorldNeedsUpdate = true;
+  }
 }
 
 function centerOnGround(root) {
@@ -362,6 +350,19 @@ function centerOnGround(root) {
   return { size: finalSize, height: finalSize.y };
 }
 
+function centerXZ(root) {
+  // Per-instance grounding already set contact Y. Do not re-lift by overall
+  // bbox minY — hanging foliage (pine1) would float every other plant again.
+  const box = computeMeshBox(root);
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.updateWorldMatrix(true, true);
+  const finalBox = computeMeshBox(root);
+  const finalSize = finalBox.getSize(new THREE.Vector3());
+  return { size: finalSize, height: finalSize.y };
+}
+
 function centerModel(root) {
   root.updateWorldMatrix(true, true);
   const layout = findLayoutRoot(root);
@@ -369,10 +370,10 @@ function centerModel(root) {
   const instances = layout.children.filter(hasMesh);
   if (instances.length >= 2) {
     for (const child of instances) groundInstance(child);
-  } else {
-    groundInstance(root);
+    return centerXZ(root);
   }
 
+  groundInstance(root);
   return centerOnGround(root);
 }
 
@@ -382,23 +383,14 @@ function repairMissingTrunks(root) {
   if (!pine1 || !trunkSrc) return;
   if (pine1.children.some((c) => c.isMesh && /trunk/i.test(c.name))) return;
 
-  const foliage = pine1.children.find(
-    (c) => c.isMesh && !/trunk/i.test(c.name),
-  );
-  if (!foliage) return;
-
+  // pine1 ships without a trunk mesh. Pine2's trunk is authored at local 0 —
+  // clone it as-is. Do not nudge foliage.position: Sketchfab's ±90° parents
+  // make local Y ≠ world up, and that offset used to bury pine1 and float
+  // every other tree after centerOnGround.
   const trunk = trunkSrc.clone(true);
   trunk.name = 'pine1_Trunk_0';
+  trunk.position.set(0, 0, 0);
   pine1.add(trunk);
-
-  pine1.updateWorldMatrix(true, true);
-  const trunkTop = getHighestWorldY(trunk);
-  const foliageYs = getSortedMeshVertexWorldYs(foliage);
-  const crownStart = foliageYs.find((y) => y > trunkTop + 0.5);
-  if (crownStart !== undefined) {
-    pine1.getWorldScale(_v);
-    foliage.position.y += (trunkTop - crownStart) / _v.y;
-  }
 }
 
 function mulberry32(seed) {
