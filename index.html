@@ -39,16 +39,7 @@ canvas.grabbing{cursor:grabbing;}
   color:#fff;
   box-shadow:inset 0 1px 0 rgba(255,255,255,0.14);
 }
-#hint{
-  position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:10;
-  padding:8px 16px;border-radius:999px;
-  background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(12px) saturate(140%);
-  -webkit-backdrop-filter:blur(12px) saturate(140%);
-  border:1px solid rgba(255,255,255,0.1);
-  color:rgba(255,255,255,0.35);font:12px/1 system-ui,sans-serif;
-  pointer-events:none;
-}
+
 #forest-controls{
   position:fixed;top:72px;right:16px;z-index:10;
   display:flex;flex-direction:column;gap:12px;
@@ -94,7 +85,6 @@ canvas.grabbing{cursor:grabbing;}
 <body>
 <canvas id="c"></canvas>
 <nav id="tabs"></nav>
-<div id="hint">Drag to orbit · Scroll to zoom</div>
 <div id="forest-controls" class="hidden">
   <h2>Forest</h2>
   <label>
@@ -127,6 +117,7 @@ canvas.grabbing{cursor:grabbing;}
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 let GRID_SIZE = 800;
@@ -214,7 +205,10 @@ grid.position.y = 0.01;
 scene.add(grid);
 
 const clock = new THREE.Clock();
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/libs/draco/gltf/');
 const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader);
 const entries = [];
 let activeEntry = null;
 
@@ -261,7 +255,7 @@ function ensureMaterial(root) {
     if (!mat) {
       child.material = new THREE.MeshBasicMaterial({
         color: 0xbc9a7a,
-        wireframe: true,
+        side: THREE.DoubleSide,
       });
     }
   });
