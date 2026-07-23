@@ -172,10 +172,6 @@ camera.position.set(80, 60, 120);
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -198,17 +194,8 @@ window.addEventListener('pointerup', () => {
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 
-const sun = new THREE.DirectionalLight(0xfff4e6, 1.2);
+const sun = new THREE.DirectionalLight(0xfff4e6, 1.8);
 sun.position.set(120, 180, 100);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-const shadowExtent = GRID_SIZE / 2;
-sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 1200;
-sun.shadow.camera.left = -shadowExtent;
-sun.shadow.camera.right = shadowExtent;
-sun.shadow.camera.top = shadowExtent;
-sun.shadow.camera.bottom = -shadowExtent;
 scene.add(sun);
 
 const fill = new THREE.DirectionalLight(0x8899cc, 0.35);
@@ -220,7 +207,6 @@ const floor = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ color: 0x161b22, roughness: 0.95, metalness: 0.05 }),
 );
 floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
 scene.add(floor);
 
 let grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x4a5568, 0x2d3748);
@@ -268,39 +254,22 @@ function configureMeshMaterials(mesh) {
   }
 }
 
-function ensureNormals(root) {
-  root.traverse((child) => {
-    if (!child.isMesh || !child.geometry) return;
-    const geo = child.geometry;
-    if (!geo.attributes.normal) geo.computeVertexNormals();
-    if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
-  });
-}
-
 function ensureMaterial(root) {
   root.traverse((child) => {
     if (!child.isMesh) return;
     const mat = child.material;
-    if (!mat || (mat.metalness >= 1 && mat.roughness >= 1 && mat.color.getHex() === 0xffffff)) {
-      child.material = new THREE.MeshStandardMaterial({
-        color: 0x8aaa7a,
-        roughness: 0.85,
-        metalness: 0,
-        side: THREE.DoubleSide,
-        flatShading: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
+    if (!mat) {
+      child.material = new THREE.MeshBasicMaterial({
+        color: 0xbc9a7a,
+        wireframe: true,
       });
     }
   });
 }
 
-function prepareMeshes(root, { shadows = true } = {}) {
+function prepareMeshes(root) {
   root.traverse((child) => {
     if (!child.isMesh) return;
-    child.castShadow = shadows;
-    child.receiveShadow = shadows;
     configureMeshMaterials(child);
   });
 }
@@ -574,16 +543,12 @@ function buildInstancedForest(gltf, options, templateCache = null) {
     buckets[typeIdx].push({ x: point.x, z: point.z, scale, spin });
   }
 
-  const castShadow = placements.length <= 400;
-
   for (let i = 0; i < typeCount; i++) {
     const instances = buckets[i];
     if (!instances.length) continue;
 
     const { geometry, material } = templates[i];
     const mesh = new THREE.InstancedMesh(geometry, material, instances.length);
-    mesh.castShadow = castShadow;
-    mesh.receiveShadow = false;
     mesh.frustumCulled = false;
 
     for (let j = 0; j < instances.length; j++) {
@@ -625,7 +590,7 @@ function rebuildAutumnForest(entry) {
     entry.forestTemplates,
   );
   entry.forestTemplates = built.templates;
-  prepareMeshes(built.forest, { shadows: false });
+  prepareMeshes(built.forest);
 
   for (const mesh of built.instancedMeshes) entry.root.add(mesh);
   entry.instancedMeshes = built.instancedMeshes;
@@ -673,16 +638,11 @@ function fitScene(modelSize) {
   if (target <= GRID_SIZE) return;
   const factor = target / GRID_SIZE;
   GRID_SIZE = target;
-  scene.fog.far = GRID_SIZE * 1.2;
-  scene.fog.near = GRID_SIZE * 0.4;
-  const extent = GRID_SIZE / 2;
+  scene.fog.far = GRID_SIZE * 5;
+  scene.fog.near = GRID_SIZE * 2;
+  camera.far = Math.max(camera.far, GRID_SIZE * 4);
+  camera.updateProjectionMatrix();
   sun.position.multiplyScalar(factor);
-  sun.shadow.camera.left = -extent;
-  sun.shadow.camera.right = extent;
-  sun.shadow.camera.top = extent;
-  sun.shadow.camera.bottom = -extent;
-  sun.shadow.camera.far = GRID_SIZE * 1.5;
-  sun.shadow.camera.updateProjectionMatrix();
   fill.position.multiplyScalar(factor);
   floor.scale.setScalar(factor);
   scene.remove(grid);
@@ -700,7 +660,7 @@ function frameModel(entry) {
   controls.target.set(0, height * 0.35, 0);
   camera.position.set(dist * 0.65, dist * 0.45, dist);
   controls.minDistance = radius * 0.4;
-  controls.maxDistance = GRID_SIZE * 0.75;
+  controls.maxDistance = Math.max(dist * 3, GRID_SIZE * 0.8);
   controls.update();
 }
 
@@ -725,7 +685,7 @@ async function loadModel(def) {
       rotXMax: def.forest.rotXMax ?? 360,
     };
     const built = buildInstancedForest(gltf, forestOptionsFromParams(forestParams));
-    prepareMeshes(built.forest, { shadows: false });
+    prepareMeshes(built.forest);
     group.add(built.forest);
     const { size, height } = centerOnGround(built.forest);
     return {
@@ -746,7 +706,6 @@ async function loadModel(def) {
 
   const root = gltf.scene;
   repairMissingTrunks(root);
-  ensureNormals(root);
   ensureMaterial(root);
   prepareMeshes(root);
   group.add(root);
