@@ -129,7 +129,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const GRID_SIZE = 800;
+let GRID_SIZE = 800;
 const GRID_DIVISIONS = 40;
 
 const MODELS = [
@@ -141,6 +141,7 @@ const MODELS = [
     forest: { count: 500, density: 70, seed: 42, rotXMin: 0, rotXMax: 360 },
   },
   { id: 'trees', label: 'Trees & Bushes', url: './trees_and_bush_pack_lowpoly.glb' },
+  { id: 'heightmap', label: 'Heightmap', url: './heightmap1.glb' },
 ];
 
 const canvas = document.getElementById('c');
@@ -222,7 +223,7 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 scene.add(floor);
 
-const grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x4a5568, 0x2d3748);
+let grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x4a5568, 0x2d3748);
 grid.position.y = 0.01;
 scene.add(grid);
 
@@ -265,6 +266,34 @@ function configureMeshMaterials(mesh) {
       mat.side = THREE.DoubleSide;
     }
   }
+}
+
+function ensureNormals(root) {
+  root.traverse((child) => {
+    if (!child.isMesh || !child.geometry) return;
+    const geo = child.geometry;
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+    if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
+  });
+}
+
+function ensureMaterial(root) {
+  root.traverse((child) => {
+    if (!child.isMesh) return;
+    const mat = child.material;
+    if (!mat || (mat.metalness >= 1 && mat.roughness >= 1 && mat.color.getHex() === 0xffffff)) {
+      child.material = new THREE.MeshStandardMaterial({
+        color: 0x8aaa7a,
+        roughness: 0.85,
+        metalness: 0,
+        side: THREE.DoubleSide,
+        flatShading: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+    }
+  });
 }
 
 function prepareMeshes(root, { shadows = true } = {}) {
@@ -639,6 +668,30 @@ function scheduleForestRebuild() {
   }, 120);
 }
 
+function fitScene(modelSize) {
+  const target = modelSize * 1.4;
+  if (target <= GRID_SIZE) return;
+  const factor = target / GRID_SIZE;
+  GRID_SIZE = target;
+  scene.fog.far = GRID_SIZE * 1.2;
+  scene.fog.near = GRID_SIZE * 0.4;
+  const extent = GRID_SIZE / 2;
+  sun.position.multiplyScalar(factor);
+  sun.shadow.camera.left = -extent;
+  sun.shadow.camera.right = extent;
+  sun.shadow.camera.top = extent;
+  sun.shadow.camera.bottom = -extent;
+  sun.shadow.camera.far = GRID_SIZE * 1.5;
+  sun.shadow.camera.updateProjectionMatrix();
+  fill.position.multiplyScalar(factor);
+  floor.scale.setScalar(factor);
+  scene.remove(grid);
+  grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x4a5568, 0x2d3748);
+  grid.position.y = 0.01;
+  scene.add(grid);
+  controls.maxDistance = GRID_SIZE * 0.8;
+}
+
 function frameModel(entry) {
   const { size, height } = entry;
   const radius = Math.max(size.x, size.z, height) * 0.55;
@@ -693,10 +746,14 @@ async function loadModel(def) {
 
   const root = gltf.scene;
   repairMissingTrunks(root);
+  ensureNormals(root);
+  ensureMaterial(root);
   prepareMeshes(root);
   group.add(root);
 
   const { size, height } = centerModel(root);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  fitScene(maxDim);
   const mixer = gltf.animations.length ? new THREE.AnimationMixer(root) : null;
   if (mixer) gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
 
