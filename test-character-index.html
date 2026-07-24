@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Character Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#111;}
+canvas{display:block;width:100%;height:100%;}
+canvas.grab{cursor:grab;}
+canvas.grabbing{cursor:grabbing;}
+#status{
+  position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  background:#111;color:#888;font:14px/1.5 system-ui,sans-serif;
+  pointer-events:none;transition:opacity .3s;z-index:20;
+}
+#status.hidden{opacity:0;}
+#status.error{color:#f66;}
+#tabs{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:10;
+  display:flex;gap:6px;padding:6px;border-radius:999px;
+  background:rgba(255,255,255,0.07);
+  backdrop-filter:blur(14px) saturate(140%);
+  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  border:1px solid rgba(255,255,255,0.14);
+  box-shadow:0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.tab{
+  padding:8px 22px;border-radius:999px;border:1px solid transparent;
+  background:transparent;color:rgba(255,255,255,0.55);
+  font:500 13px/1 system-ui,sans-serif;cursor:pointer;
+  transition:background .2s,color .2s,border-color .2s;
+}
+.tab:hover{color:rgba(255,255,255,0.85);}
+.tab.active{
+  background:rgba(255,255,255,0.14);
+  border-color:rgba(255,255,255,0.22);
+  color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.12);
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<nav id="tabs"></nav>
+<div id="status">Loading…</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const EXCLUDED_CLIP = 'T-Pose (No Animation)';
+const CROSSFADE_DURATION = 0.25;
+const ONESHOT_FADE = 0.15;
+const WALK_SPEED = 120;
+const ROLL_SPEED = 260;
+const ROTATION_LERP = 10;
+const GRID_SIZE = 1600;
+const GRID_DIVISIONS = 40;
+const FLOOR_BOUND = GRID_SIZE / 2 - 20;
+
+const CHARACTERS = [
+  {
+    id: 'char1',
+    label: 'Character 1',
+    url: './cac-1783899437043.glb',
+    mode: 'cycle',
+    startClip: 'Ideal',
+  },
+  {
+    id: 'char2',
+    label: 'Character 2',
+    url: './cac-1783902065521.glb',
+    mode: 'gameplay',
+    clips: {
+      idle: 'InjuredIdle',
+      walk: 'CrouchedWalking',
+      jump: 'Jump',
+      roll: 'SprintingForwardRoll',
+    },
+  },
+];
+
+const canvas = document.getElementById('c');
+const statusEl = document.getElementById('status');
+const tabsEl = document.getElementById('tabs');
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 90, 260);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.enablePan = false;
+controls.maxPolarAngle = Math.PI * 0.48;
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: null,
+  RIGHT: null,
+};
+
+canvas.classList.add('grab');
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button === 0) {
+    canvas.classList.remove('grab');
+    canvas.classList.add('grabbing');
+  }
+});
+window.addEventListener('pointerup', () => {
+  canvas.classList.remove('grabbing');
+  canvas.classList.add('grab');
+});
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(120, 220, 160);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 2400;
+sun.shadow.camera.left = -FLOOR_BOUND;
+sun.shadow.camera.right = FLOOR_BOUND;
+sun.shadow.camera.top = FLOOR_BOUND;
+sun.shadow.camera.bottom = -FLOOR_BOUND;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x8899bb, 0.35);
+fill.position.set(-120, 140, -80);
+scene.add(fill);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE),
+  new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const grid = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, 0x555555, 0x333333);
+scene.add(grid);
+
+const clock = new THREE.Clock();
+const keys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
+let activeChar = null;
+
+function setStatus(text, isError = false) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle('error', isError);
+  statusEl.classList.toggle('hidden', !text);
+}
+
+// ---------- Loading ----------
+
+async function loadGltf(url, onProgress) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} — is the folder served over HTTP?`);
+
+  const total = Number(res.headers.get('Content-Length')) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    onProgress(loaded, total);
+  }
+
+  const buffer = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return new Promise((resolve, reject) => {
+    new GLTFLoader().parse(buffer.buffer, '', resolve, reject);
+  });
+}
+
+// Removes the hips translation tracks so WASD (not the clip) drives world movement.
+function inPlaceClip(clip) {
+  const tracks = clip.tracks.map((t) => {
+    if (t.name.includes('Hips') && t.name.endsWith('.position')) {
+      // Keep the authored vertical (Y) motion so feet stay planted (e.g. crouch
+      // lowers the hips), but hold X/Z constant so WASD drives horizontal travel.
+      const values = t.values.slice();
+      const x0 = values[0];
+      const z0 = values[2];
+      for (let i = 0; i < values.length; i += 3) {
+        values[i] = x0;
+        values[i + 2] = z0;
+      }
+      return new THREE.VectorKeyframeTrack(t.name, t.times.slice(), values);
+    }
+    return t;
+  });
+  return new THREE.AnimationClip(clip.name + '_inplace', clip.duration, tracks);
+}
+
+function centerModel(model) {
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  model.position.x -= center.x;
+  model.position.z -= center.z;
+  model.position.y -= box.min.y;
+  return size.y;
+}
+
+async function loadCharacter(def) {
+  const gltf = await loadGltf(def.url, (loaded, total) => {
+    const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : null;
+    setStatus(pct !== null
+      ? `Loading ${def.label}… ${pct}%`
+      : `Loading ${def.label}… ${(loaded / 1048576).toFixed(1)} MB`);
+  });
+
+  setStatus(`Processing ${def.label}…`);
+  await new Promise((r) => setTimeout(r));
+
+  const model = gltf.scene;
+  model.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+
+  const group = new THREE.Group();
+  group.add(model);
+  const height = centerModel(model);
+  group.visible = false;
+  scene.add(group);
+
+  const mixer = new THREE.AnimationMixer(model);
+  const clips = gltf.animations.filter((c) => c.name !== EXCLUDED_CLIP);
+
+  const char = {
+    def,
+    group,
+    mixer,
+    height,
+    clips,
+    currentAction: null,
+    clipIndex: 0,
+    oneShot: null,
+    actions: {},
+    rollDir: new THREE.Vector3(),
+  };
+
+  if (def.mode === 'gameplay') {
+    const byName = Object.fromEntries(clips.map((c) => [c.name, c]));
+    char.actions.idle = mixer.clipAction(byName[def.clips.idle]);
+    char.actions.walk = mixer.clipAction(inPlaceClip(byName[def.clips.walk]));
+    char.actions.roll = mixer.clipAction(inPlaceClip(byName[def.clips.roll]));
+    char.actions.jump = mixer.clipAction(byName[def.clips.jump]);
+    for (const name of ['jump', 'roll']) {
+      char.actions[name].setLoop(THREE.LoopOnce, 1);
+      char.actions[name].clampWhenFinished = true;
+    }
+    char.state = 'idle';
+
+    mixer.addEventListener('finished', () => {
+      char.oneShot = null;
+      setGameplayState(char, isMoving() ? 'walk' : 'idle');
+    });
+  }
+
+  return char;
+}
+
+// ---------- Animation helpers ----------
+
+function fadeToAction(char, next, duration) {
+  next.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).play();
+  if (char.currentAction && char.currentAction !== next) {
+    char.currentAction.crossFadeTo(next, duration, false);
+  }
+  char.currentAction = next;
+}
+
+// Character 1: Space cycles clips
+function playClip(char, index) {
+  fadeToAction(char, char.mixer.clipAction(char.clips[index]), CROSSFADE_DURATION);
+  char.clipIndex = index;
+}
+
+function nextAnimation(char) {
+  if (!char.clips.length) return;
+  playClip(char, (char.clipIndex + 1) % char.clips.length);
+}
+
+// Character 2: state machine
+function setGameplayState(char, state) {
+  char.state = state;
+  fadeToAction(char, char.actions[state], CROSSFADE_DURATION);
+}
+
+function triggerOneShot(char, name) {
+  if (char.oneShot) return;
+  char.oneShot = name;
+  char.state = name;
+  fadeToAction(char, char.actions[name], ONESHOT_FADE);
+}
+
+// Roll travels: aim toward held input if any, else the current facing, then lunge.
+function triggerRoll(char) {
+  if (char.oneShot) return;
+  if (inputDirection(_dir)) {
+    char.rollDir.copy(_dir);
+    char.group.rotation.y = Math.atan2(_dir.x, _dir.z);
+  } else {
+    const a = char.group.rotation.y;
+    char.rollDir.set(Math.sin(a), 0, Math.cos(a));
+  }
+  triggerOneShot(char, 'roll');
+}
+
+function isMoving() {
+  return keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD;
+}
+
+// ---------- Movement (Character 2) ----------
+
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+
+// Camera-relative movement direction from WASD; returns false when no keys held.
+function inputDirection(out) {
+  camera.getWorldDirection(_forward);
+  _forward.y = 0;
+  _forward.normalize();
+  _right.crossVectors(_forward, _up).normalize();
+
+  out.set(0, 0, 0)
+    .addScaledVector(_forward, (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0))
+    .addScaledVector(_right, (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0));
+
+  if (out.lengthSq() < 1e-6) return false;
+  out.normalize();
+  return true;
+}
+
+function moveGroup(char, dir, speed, delta) {
+  const pos = char.group.position;
+  pos.addScaledVector(dir, speed * delta);
+  pos.x = THREE.MathUtils.clamp(pos.x, -FLOOR_BOUND, FLOOR_BOUND);
+  pos.z = THREE.MathUtils.clamp(pos.z, -FLOOR_BOUND, FLOOR_BOUND);
+}
+
+function faceDirection(char, dir, delta) {
+  const targetAngle = Math.atan2(dir.x, dir.z);
+  let diff = targetAngle - char.group.rotation.y;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  char.group.rotation.y += diff * Math.min(1, ROTATION_LERP * delta);
+}
+
+function updateGameplay(char, delta) {
+  // Roll carries the character forward along the direction captured at trigger.
+  if (char.oneShot === 'roll') {
+    moveGroup(char, char.rollDir, ROLL_SPEED, delta);
+    return;
+  }
+
+  if (char.oneShot) return; // jump stays in place
+
+  const moving = isMoving();
+  const want = moving ? 'walk' : 'idle';
+  if (char.state !== want) setGameplayState(char, want);
+
+  if (!moving) return;
+  if (!inputDirection(_dir)) return;
+
+  moveGroup(char, _dir, WALK_SPEED, delta);
+  faceDirection(char, _dir, delta);
+}
+
+// ---------- Camera ----------
+
+const _targetDelta = new THREE.Vector3();
+
+function frameCamera(char) {
+  const height = char.height;
+  const pos = char.group.position;
+  const targetY = height * 0.4;
+  controls.target.set(pos.x, pos.y + targetY, pos.z);
+  camera.position.set(pos.x, pos.y + targetY + height * 0.15, pos.z + height * 2);
+  controls.minDistance = height * 0.8;
+  controls.maxDistance = height * 6;
+  camera.far = Math.max(2000, height * 20);
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+function followCamera(char) {
+  const pos = char.group.position;
+  _targetDelta.set(pos.x, pos.y + char.height * 0.4, pos.z).sub(controls.target);
+  if (_targetDelta.lengthSq() < 1e-10) return;
+  camera.position.add(_targetDelta);
+  controls.target.add(_targetDelta);
+}
+
+// ---------- Tabs ----------
+
+const characters = [];
+
+// Stop every action on a character's mixer so nothing keeps playing off-screen.
+function stopCharacter(char) {
+  char.mixer.stopAllAction();
+  char.currentAction = null;
+  char.oneShot = null;
+}
+
+// Snap a character back to its default idle/start clip.
+function resetToIdle(char) {
+  char.currentAction = null;
+  char.oneShot = null;
+  if (char.def.mode === 'cycle') {
+    const startIndex = char.clips.findIndex((c) => c.name === char.def.startClip);
+    char.clipIndex = startIndex >= 0 ? startIndex : 0;
+    playClip(char, char.clipIndex);
+  } else {
+    char.group.rotation.y = 0;
+    setGameplayState(char, 'idle');
+  }
+}
+
+function setActiveCharacter(char) {
+  const changed = activeChar !== char;
+
+  if (changed && activeChar) stopCharacter(activeChar);
+
+  activeChar = char;
+
+  for (const key of Object.keys(keys)) keys[key] = false;
+
+  for (const c of characters) {
+    c.group.visible = c === char;
+  }
+
+  for (const btn of tabsEl.children) {
+    btn.classList.toggle('active', btn.dataset.id === char.def.id);
+  }
+
+  resetToIdle(char);
+
+  if (changed) frameCamera(char);
+}
+
+function buildTabs() {
+  for (const char of characters) {
+    const btn = document.createElement('button');
+    btn.className = 'tab';
+    btn.dataset.id = char.def.id;
+    btn.textContent = char.def.label;
+    btn.addEventListener('click', () => setActiveCharacter(char));
+    tabsEl.appendChild(btn);
+  }
+}
+
+// ---------- Input ----------
+
+window.addEventListener('keydown', (e) => {
+  if (!activeChar) return;
+
+  if (e.code in keys) {
+    keys[e.code] = true;
+    return;
+  }
+
+  if (e.repeat) return;
+
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (activeChar.def.mode === 'cycle') {
+      nextAnimation(activeChar);
+    } else {
+      triggerOneShot(activeChar, 'jump');
+    }
+  } else if ((e.code === 'ControlLeft' || e.code === 'ControlRight') && activeChar.def.mode === 'gameplay') {
+    e.preventDefault();
+    triggerRoll(activeChar);
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.code in keys) keys[e.code] = false;
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Startup ----------
+
+async function init() {
+  try {
+    for (const def of CHARACTERS) {
+      const char = await loadCharacter(def);
+      characters.push(char);
+    }
+
+    buildTabs();
+    setActiveCharacter(characters[0]);
+    setStatus('');
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to load: ${err.message}`, true);
+  }
+}
+
+init();
+
+// ---------- Render loop ----------
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+
+  if (activeChar) {
+    activeChar.mixer.update(delta);
+    if (activeChar.def.mode === 'gameplay') {
+      updateGameplay(activeChar, delta);
+      followCamera(activeChar);
+    }
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+renderer.setSize(innerWidth, innerHeight);
+animate();
+</script>
+</body>
+</html>
